@@ -27,7 +27,7 @@ git status --short
 python3 -I .agents/skills/write-test/scripts/map_components.py
 ```
 
-The script maps every Go file changed against `origin/main`, untracked new files included, which `git diff` alone would miss. It ignores other files, so read the rest of `git status --short` and `git diff --name-only origin/main...` too: a changed schema (`pkg/config/schema/yaml/`), profile or embedded YAML file names a behavior on its own, the effect of the setting or entry it changes, and its loader is the entry point for Step 1. When neither the Go files nor these identify a behavior, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
+The script maps every Go file changed against `origin/main`: untracked new files, which `git diff` alone would miss, and deleted files, whose component or importers are still entry points. A package deleted entirely, with nothing left importing it, is listed with the merge-base commands to read it. It ignores other files, so read the rest of `git status --short` and `git diff --name-only origin/main...` too: a changed schema (`pkg/config/schema/yaml/`), profile or embedded YAML file names a behavior on its own, the effect of the setting or entry it changes, and its loader is the entry point for Step 1. When neither the Go files nor these identify a behavior, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
 
 ## Step 1 — Map the components involved
 
@@ -87,34 +87,22 @@ Run it after adding a test file or `testdata/` files, and after changing the imp
 
 ## Step 5 — Validate
 
-1. Run it: `dda inv test --targets=./<package> --test-args='-test.v'`. Read the subtest results in the Bazel test log, not only the target status. Its path is printed for a failing target; for a passing one, targets with build-tag flavors live under a transitioned configuration that `bazel-testlogs` doesn't point to, so find it with `find "$(bazel info output_path)" -path '*/testlogs/<package>/*/test.log'`: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to iterate on one case.
-2. Prove it fails, by breaking the behavior once and checking the test catches it. The change under test may have uncommitted, staged and untracked edits (a new fixture), so the tree is snapshotted first and restored from that snapshot, never by undoing the break by hand.
-   1. **Look for a leftover break.** `find "$(git rev-parse --absolute-git-dir)" -maxdepth 1 -name 'write-test-baseline.*'` lists the baselines of earlier runs in this worktree. One that this run didn't create means an earlier run stopped between its break and its restore, or another run is in progress: show it to the contributor and ask before going on, since its break may still be in the tree.
-   2. **Snapshot the tree** into a baseline file of its own, so overlapping runs can't overwrite each other's:
+1. Run it, so that this invocation runs the test and prints its log, rather than reporting a cached result or leaving the log under a configuration directory that `bazel-testlogs` doesn't point to:
+   ```bash
+   dda inv test --targets=./<package> --test-args='-test.v' --bazel-args='--test_output=all --nocache_test_results'
+   ```
+   Read the subtest results in that output, not only the target status: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to `--test-args` to iterate on one case. Run it again whenever the test changes: the last run on the contributor's tree is the one to report.
+2. Prove it fails, by breaking the behavior once in a throwaway worktree holding a copy of the contributor's tree, uncommitted, staged and untracked edits included. The break never touches their files, so there is nothing to restore and nothing an interruption can leave behind in them.
+   1. **Copy the tree:**
       ```bash
-      baseline=$(mktemp "$(git rev-parse --absolute-git-dir)/write-test-baseline.XXXXXX") && .agents/skills/write-test/scripts/snapshot_tree.sh > "$baseline" && [ -s "$baseline" ] && echo "$baseline" || { echo "no baseline snapshot: don't break anything" >&2; false; }
+      tree=$(.agents/skills/write-test/scripts/snapshot_tree.sh) && commit=$(git commit-tree "$tree" -p HEAD -m "write-test snapshot") && dir=".worktrees/write-test-${commit:0:12}" && git worktree add --detach "$dir" "$commit" && echo "$dir"
       ```
-      It prints the baseline's path. Shell variables don't survive across commands, so use that path literally in the commands below. The script prints the staged tree and the tree of everything on disk that isn't ignored, computed on a copy of the index, and fails, printing nothing, on any git error. Break nothing until this command succeeds.
-   3. **Choose the break and give its restore command.** The break is one edit to one file that already exists (an input fixture, a condition in the code), named by its path from the repository root. Don't create, delete or stage a file, which restoring can't undo. Check the file is unchanged since the snapshot:
-      ```bash
-      [ "$(git hash-object <file>)" = "$(git rev-parse "$(cut -d' ' -f2 <baseline>):<file>")" ]
-      ```
-      Then tell the contributor the command that restores it, so that an interruption leaves them a way back:
-      ```bash
-      git restore --source="$(cut -d' ' -f2 <baseline>)" --worktree -- <file>
-      ```
-      It writes the file back from the snapshot's working tree, and leaves the index alone.
-   4. **Break and run.** Make the edit, then record the broken file's hash, `git hash-object <file>`. Run the test. It must fail with a message naming the problem: a test that still passes on the break was asserting on something else.
-   5. **Restore, whatever the result,** but only the break: check that `git hash-object <file>` still prints the hash you recorded, then run the restore command. A different hash means the file was edited after the break, and restoring would erase that edit: don't restore, show the contributor the file's diff against the snapshot (`git diff "$(cut -d' ' -f2 <baseline>)" -- <file>`) and stop.
-   6. **Check the tree is restored:**
-      ```bash
-      [ -s <baseline> ] && .agents/skills/write-test/scripts/snapshot_tree.sh | cmp -s - <baseline> && rm <baseline>
-      ```
-      Treat a failed snapshot as a failed check, never as a match. On success the baseline is removed. A mismatch means a file other than the break changed since the snapshot, possibly by the contributor: keep the baseline, show `git status --short`, restore nothing else, and stop.
+      The script prints the tree of every file on disk that isn't ignored, file modes included, without touching the index. The commit is on no branch, and `.worktrees/` is ignored by git and excluded from Bazel's workspace. The copy has its own Bazel output base, so its first build takes longer, fed by the shared repository and remote caches. Ignored files aren't copied: when the test needs a generated file that is ignored, generate it in the copy with the same command.
+   2. **Break and run.** Make one edit in the copy (an input fixture, a condition in the code), then run the Step 5.1 command from the copy's directory. The test must fail with a message naming the problem: a test that still passes on the break was asserting on something else, and a skip is not a failure.
+   3. **Remove the copy,** whatever the result: `git worktree remove --force <dir>`. A copy left by an interrupted run shows in `git worktree list` as a `write-test-*` entry, and is removed the same way.
 
-   The break runs in place rather than in a copy of the worktree, since a copy starts Bazel from an empty output base and rebuilds everything. When the check can't be completed safely (no baseline, a leftover the contributor didn't clear, a file edited during the check, or a tree that doesn't match after the restore), don't break anything more. Report `Validated: deliberate break not run — <reason>` or `tree not restored — <what differs>, baseline kept at <path>`, and mark the test **incomplete**.
-3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
-4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
+   When the copy can't be made or the test can't run in it, report `Validated: deliberate break not run — <reason>`, and mark the test **incomplete**.
+3. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
 ## Output
 
@@ -129,14 +117,14 @@ Report:
 | --- | --- | --- | --- |
 | `TestX/<case>` | `comp/...` | <components wired for real> | <dependency>: <outside the boundary because…> |
 
-**Validated:** <the deliberate break and the failure it produced> · <the snapshot matching after the restore> · <the rerun passing on the restored tree> · <lint result>
+**Validated:** <the deliberate break and the failure it produced in the copy> · <the last run passing on the contributor's tree> · <lint result>
 **Handed to write-e2e:** <the assertions, and its result: test written or not, and the checks it ran> (omit when nothing was handed off)
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 
 With assertions at several levels, give the Level and Validated lines once per test. When every assertion was handed off, the report keeps Behavior, Pipeline, a Level line per assertion, Handed to write-e2e, and Not covered; drop the table and the Validated line, since no test was written here, and mark each assertion whose test `write-e2e` didn't write or validate as **incomplete**, with the reason.
 
-The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break, the tree snapshot matches after restoring it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error.
+The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break in the copy, its last run on the contributor's tree passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error.
 
 ## Example
 
@@ -153,7 +141,7 @@ The skill succeeded when every assertion has a test that was written and validat
 | --- | --- | --- | --- |
 | `TestInvalidConfigPayload/<scenario>`, 9 scenarios | `comp/healthplatform` | config and sysprobeconfig loading from files and `DD_*` variables, schema validation, healthplatform checks and store, forwarder | intake: an in-process fakeintake, which receives the same HTTP payload · secrets: the secrets mock, resolving `ENC[]` handles from `secrets.json`, since settings are validated before their handles are resolved and the backend binary is outside the payload boundary · log, telemetry, hostname, workloadmeta: their mocks, since no assertion reads them |
 
-**Validated:** setting `DD_LOGS_ENABLED` to an invalid value in the `env_types` fixture failed the `env_types` subtest on an unexpected `/logs_enabled` issue · after the restore, the snapshot matched · the 9 subtests passed on the rerun · lint clean
+**Validated:** setting `DD_LOGS_ENABLED` to an invalid value in the copy's `env_types` fixture failed the `env_types` subtest on an unexpected `/logs_enabled` issue · the 9 subtests pass on the contributor's tree · lint clean
 **Not covered:** a real secret backend binary, the systemd environment file setting `DD_*` variables, and the packaged Agent's hostname and version. No other level covers them; keeping one new-e2e scenario as a smoke test would
 ```
 

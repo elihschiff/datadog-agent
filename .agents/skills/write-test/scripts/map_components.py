@@ -36,13 +36,14 @@ def git(*args):
 
 
 def changed_go_files():
+    """Return the merge base and the Go files changed since it, deleted ones included: they are entry points too."""
     try:
         base = git("merge-base", "HEAD", "origin/main").strip()
     except subprocess.CalledProcessError:
         sys.exit("origin/main not found: fetch it (git fetch origin main), or pass the paths to map explicitly.")
     tracked = git("diff", "--name-only", base).splitlines()
     untracked = git("ls-files", "--others", "--exclude-standard").splitlines()
-    return sorted({p for p in tracked + untracked if p.endswith(".go") and os.path.exists(p)})
+    return base, sorted({p for p in tracked + untracked if p.endswith(".go")})
 
 
 def expand(paths):
@@ -149,7 +150,12 @@ def main():
     root = git("rev-parse", "--show-toplevel").strip()
     paths = [os.path.relpath(os.path.abspath(p), root) for p in args]
     os.chdir(root)
-    files = expand(paths) if paths else changed_go_files()
+    base = "origin/main"
+    if paths:
+        files = expand(paths)
+    else:
+        base, files = changed_go_files()
+        base = base[:12]
     if not files:
         print("No Go file to map.")
         return
@@ -174,7 +180,9 @@ def main():
     print("| Component | Kind | Team | Reached by | Test wiring | Consumers |")
     print("| --- | --- | --- | --- | --- | --- |")
     for root in sorted(set(changed) | set(via_pkg)):
-        reached_by = sorted(f"`{os.path.relpath(p, root)}`" for p in changed.get(root, ()))
+        reached_by = sorted(
+            f"`{os.path.relpath(p, root)}`" + ("" if os.path.exists(p) else " (deleted)") for p in changed.get(root, ())
+        )
         reached_by += sorted(f"imports `{p}`" for p in via_pkg.get(root, ()))
         consumers = sorted(
             {package_root(d)[0] or d for package in public_packages(root) for d in importers(package)} - {root}
@@ -194,6 +202,11 @@ def main():
         print("to this script to follow the pipeline up to a component, or test them as plain packages:")
         for package_dir in sorted(unmapped):
             print(f"- `{package_dir}` ({unmapped[package_dir]} file(s))")
+    deleted = sorted(p for p in unmapped if not os.path.isdir(p))
+    if deleted:
+        # their importers changed or are gone too, so they can only be followed at the merge base
+        print(f"\nDeleted entirely, so follow them at the merge base `{base}`:", ", ".join(f"`{p}`" for p in deleted))
+        print(f"`git show {base}:<path>` reads a file, `git grep -l '\"<import path>\"' {base}` its importers.")
 
 
 if __name__ == "__main__":
