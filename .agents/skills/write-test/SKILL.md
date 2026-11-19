@@ -27,7 +27,7 @@ git status --short
 python3 -I .agents/skills/write-test/scripts/map_components.py
 ```
 
-The script maps every Go file changed against `origin/main`, untracked new files included, which `git diff` alone would miss. When it finds no Go file, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
+The script maps every Go file changed against `origin/main`, untracked new files included, which `git diff` alone would miss. It ignores other files, so read the rest of `git status --short` and `git diff --name-only origin/main...` too: a changed schema (`pkg/config/schema/yaml/`), profile or embedded YAML file names a behavior on its own, the effect of the setting or entry it changes, and its loader is the entry point for Step 1. When neither the Go files nor these identify a behavior, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
 
 ## Step 1 — Map the components involved
 
@@ -83,7 +83,7 @@ For both, match the header and build tags of the package's other test files, and
 bazel run //:gazelle -- <package dir>
 ```
 
-Run it after adding a test file or `testdata/` files, and keep the generated `BUILD.bazel` diff with the test changes: CI fails without it (`bazel:run-gazelle`). Committing is up to the contributor. Check that files the test reads at runtime are in the test target's `data` (gazelle adds `glob(["testdata/**"])`) and that `go:embed` files are in `embedsrcs`. Gazelle doesn't always remove entries for deleted files; remove those by hand.
+Run it after adding a test file or `testdata/` files, and after changing the imports of an existing test, which changes its target's `deps`. Keep the generated `BUILD.bazel` diff with the test changes: CI fails without it (`bazel:run-gazelle`). Committing is up to the contributor. Check that files the test reads at runtime are in the test target's `data` (gazelle adds `glob(["testdata/**"])`) and that `go:embed` files are in `embedsrcs`. Gazelle doesn't always remove entries for deleted files; remove those by hand. When a `BUILD.bazel` file changed, run `bazel run //bazel/buildifier:test`, and on failure `bazel run //bazel/buildifier` then the test again.
 
 ## Step 5 — Validate
 
@@ -95,19 +95,24 @@ Run it after adding a test file or `testdata/` files, and keep the generated `BU
       baseline=$(mktemp "$(git rev-parse --absolute-git-dir)/write-test-baseline.XXXXXX") && .agents/skills/write-test/scripts/snapshot_tree.sh > "$baseline" && [ -s "$baseline" ] && echo "$baseline" || { echo "no baseline snapshot: don't break anything" >&2; false; }
       ```
       It prints the baseline's path. Shell variables don't survive across commands, so use that path literally in the commands below. The script prints the staged tree and the tree of everything on disk that isn't ignored, computed on a copy of the index, and fails, printing nothing, on any git error. Break nothing until this command succeeds.
-   3. **Give the restore command before the break.** Choose the break: one edit to a file that already exists (an input fixture, a condition in the code). Don't create, delete or stage a file, which restoring can't undo. Then tell the contributor the command that restores it, so that an interruption leaves them a way back:
+   3. **Choose the break and give its restore command.** The break is one edit to one file that already exists (an input fixture, a condition in the code), named by its path from the repository root. Don't create, delete or stage a file, which restoring can't undo. Check the file is unchanged since the snapshot:
+      ```bash
+      [ "$(git hash-object <file>)" = "$(git rev-parse "$(cut -d' ' -f2 <baseline>):<file>")" ]
+      ```
+      Then tell the contributor the command that restores it, so that an interruption leaves them a way back:
       ```bash
       git restore --source="$(cut -d' ' -f2 <baseline>)" --worktree -- <file>
       ```
       It writes the file back from the snapshot's working tree, and leaves the index alone.
-   4. **Break, run, restore.** Make the edit and run the test. It must fail with a message naming the problem: a test that still passes on the break was asserting on something else. Then run the restore command, whatever the result.
-   5. **Check the tree is restored:**
+   4. **Break and run.** Make the edit, then record the broken file's hash, `git hash-object <file>`. Run the test. It must fail with a message naming the problem: a test that still passes on the break was asserting on something else.
+   5. **Restore, whatever the result,** but only the break: check that `git hash-object <file>` still prints the hash you recorded, then run the restore command. A different hash means the file was edited after the break, and restoring would erase that edit: don't restore, show the contributor the file's diff against the snapshot (`git diff "$(cut -d' ' -f2 <baseline>)" -- <file>`) and stop.
+   6. **Check the tree is restored:**
       ```bash
       [ -s <baseline> ] && .agents/skills/write-test/scripts/snapshot_tree.sh | cmp -s - <baseline> && rm <baseline>
       ```
-      Treat a failed snapshot as a failed check, never as a match. On success the baseline is removed. On failure keep it, show `git status --short`, and stop.
+      Treat a failed snapshot as a failed check, never as a match. On success the baseline is removed. A mismatch means a file other than the break changed since the snapshot, possibly by the contributor: keep the baseline, show `git status --short`, restore nothing else, and stop.
 
-   When the check can't be completed safely (no baseline, a leftover the contributor didn't clear, or a tree that doesn't match after the restore), don't break anything more. Report `Validated: deliberate break not run — <reason>` or `tree not restored — <what differs>, baseline kept at <path>`, and mark the test **incomplete**.
+   The break runs in place rather than in a copy of the worktree, since a copy starts Bazel from an empty output base and rebuilds everything. When the check can't be completed safely (no baseline, a leftover the contributor didn't clear, a file edited during the check, or a tree that doesn't match after the restore), don't break anything more. Report `Validated: deliberate break not run — <reason>` or `tree not restored — <what differs>, baseline kept at <path>`, and mark the test **incomplete**.
 3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
 4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
