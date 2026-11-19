@@ -217,30 +217,37 @@ Needs `dda`, `pulumi`, `~/.test_infra_config.yaml` (created by `dda inv e2e.setu
 
 G2 flags candidates for review, not violations. A parameterised registry such as `${DD_REGISTRY:-docker.io}` resolves to the cache in CI and is fine; a hardcoded `docker.io/...` or a package install on the VM is not. G3 is a grep, so it comes before G4 — there is no point proving a test works before knowing whether anything runs it.
 
-G4 is the only gate that provisions real cloud infrastructure, and it takes 10–40 minutes. Dev mode keeps the stack alive between runs, so all three live checks share one provision. The stack is named after the suite (`e2e-<Suite>-<package hash>`), so another session validating the same suite under the same profile would share it: give this session's stack a suffix of its own, and pass it to every run and to the teardown:
+G4 is the only gate that provisions real cloud infrastructure, and it takes 10–40 minutes. Dev mode keeps the stack alive between runs, so all three live checks share one provision.
+
+Every run, the teardown included, must select the same stacks:
+
+- **The same package, filter and suite arguments.** Take them from the suite's CI job (`TARGETS`, and the `EXTRA_PARAMS` of the matrix entry that runs it), keeping the arguments the suite requires: `TestDDOTInstallScript` fails without `--osdescriptors`, and runs one sub-suite, with a stack of its own, per descriptor passed. Pass a single descriptor or configuration, the one under test, so that one stack is provisioned.
+- **A suffix of this session's own.** Stack names derive from the suite (`e2e-<Suite>-<package hash>` by default, or the name given with `WithStackName`), so another session validating the same suite under the same profile would share them.
+- **Modes set explicitly.** Each `E2E_*` mode inherited from the shell changes what a run does: `E2E_INIT_ONLY` skips the tests, `E2E_TEARDOWN_ONLY` destroys the stack without testing it, and `E2E_DEV_MODE` skips the deletion.
 
 ```bash
 suffix=wt$(openssl rand -hex 4)  # random, once per validation session
+g4() { E2E_INIT_ONLY=false dda inv new-e2e-tests.run --targets=./tests/<area>/... <suite args> --stack-name-suffix="$suffix" "$@"; }
 # 1. One subtest on fresh infrastructure — proves it does not depend on a sibling.
 #    A testify suite nests subtests under the method: TestX/TestMethod/SubB.
-E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^TestMethod$/^SubB$' --stack-name-suffix=$suffix
+E2E_DEV_MODE=true E2E_TEARDOWN_ONLY=false g4 --run '^TestX$/^TestMethod$/^SubB$'
 # 2. The whole suite, reusing that stack. Filter on its entry point: an area often
 #    holds several suites, each provisioning its own stack.
-E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
+E2E_DEV_MODE=true E2E_TEARDOWN_ONLY=false g4 --run '^TestX$'
 # 3. Again, without dev mode — a second green run proves each test left the
 #    environment as it found it, and the suite destroys its own stack on the way out.
-E2E_DEV_MODE=false E2E_INIT_ONLY=false dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
+E2E_DEV_MODE=false E2E_TEARDOWN_ONLY=false g4 --run '^TestX$'
 ```
 
 Check in each run's output that every subtest it should run, the new ones at least, is reported as passed by its full name (`--- PASS: TestX/TestMethod/SubB`). A `--run` filter that matches the suite's entry point but none of its subtests still ends green without running a single assertion: such a run doesn't count for G4.
 
-The last run releases the infrastructure, and only this session's stack. Set `E2E_DEV_MODE=false` and `E2E_INIT_ONLY=false` on it explicitly rather than leaving the variables out: either mode, inherited from the shell, skips the deletion. When G4 stops before that run, on a failure, a run that matched no assertion, or an interruption, release the stack before stopping:
+Record the name of each stack the first run provisions, from its `Provisioning environment stack <name>` lines: those are the stacks to release, whatever naming the suite uses. The last run releases them. When G4 stops before that run completes, on a failure, a run that matched no assertion, or an interruption of any run, the last one included, release them before stopping:
 
 ```bash
-E2E_DEV_MODE=false E2E_INIT_ONLY=false E2E_TEARDOWN_ONLY=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
+E2E_DEV_MODE=false E2E_TEARDOWN_ONLY=true g4 --run '^TestX$'
 ```
 
-It skips setup and tests and destroys only the stack of the suite it selects, with this session's suffix. Either way, report the stack as released only when the command ran to completion and exited 0, and its output logs `Destroying stack e2e-<Suite>-<hash>-<suffix>` with no destroy error after it: that line is printed before the destroy starts, so an interrupted run prints it too. Otherwise report the stack as still running, with its name. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
+It skips setup and tests and destroys only the stacks of the suite it selects, with this session's suffix. Whichever command released them, check that `pulumi stack ls --all` no longer lists any of the recorded names, and report them as released only then; otherwise report each one left as still running, with its name. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
 
 Show these commands and get agreement before running any of them. Compilation alone is not evidence the test works, so treat skipping G4 as a gap to report rather than a shortcut.
 

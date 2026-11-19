@@ -14,10 +14,13 @@ Write and validate the lower-level tests (Steps 3 to 5). Remove an assertion fro
 
 Shrink the suite to the assertions that still need E2E, or remove it when none do. Remove what only served the removed tests too: fixtures, helpers, then rerun gazelle.
 
-CI selects suites by package and by name: a job's `TARGETS` lists packages, and its `EXTRA_PARAMS` (`--run TestECSSuite`) or the template it extends can narrow them to some suites. Several jobs can share one package: `new-e2e-containers-ecs` and `new-e2e-containers` both target `./tests/containers` and run different suites. So for each job whose `TARGETS` holds the package (`grep -rn 'TARGETS:.*<package>' .gitlab/`):
+CI selects suites by package and by name: a job's `TARGETS` lists packages, and its `EXTRA_PARAMS` (`--run TestECSSuite`, `--skip ...`), or the template it extends, narrows them to some suites. A `parallel: matrix:` job sets `EXTRA_PARAMS` per entry, each entry a CI run of its own, and several jobs can share one package: `new-e2e-containers-ecs` and `new-e2e-containers` both target `./tests/containers`, and `new-e2e-containers` has six entries running only `TestKindSuite` beside entries running `TestDockerSuite` and the rest. So for each job whose `TARGETS` holds the package (`grep -rn 'TARGETS:.*<package>' .gitlab/`), evaluate each matrix entry, or the job's own `EXTRA_PARAMS` when it has no matrix:
 
-- When a suite it selects is still in the package, leave its `TARGETS` alone, and narrow its `--run` filter only if it names the removed suite.
-- When none is, remove the package from its `TARGETS`, and remove the job and its `.gitlab/JOBOWNERS` entry when no target is left.
+- **An entry selecting only the removed suite:** remove the entry.
+- **An entry selecting it with others:** narrow its `--run` to the others, and leave a `--skip` naming it as it is, since it skips nothing once the suite is gone.
+- **An entry not selecting it:** leave it alone.
+
+Then, when a job has no entry left, or no suite it selects is left in the package, remove the package from its `TARGETS`, and the job and its `.gitlab/JOBOWNERS` entry when no target is left.
 
 ## Check what's left
 

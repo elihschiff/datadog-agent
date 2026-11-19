@@ -22,7 +22,9 @@ trap cleanup EXIT
 git worktree add --quiet --detach "$dir" HEAD
 trap 'git worktree remove --force "$dir" >/dev/null 2>&1 || true; cleanup' ERR
 
-git diff --binary HEAD > "$patch"
+# explicit prefixes and no external diff or color: diff.noprefix, diff.external or color.diff=always in the
+# contributor's configuration would otherwise produce a patch git apply rejects
+git diff --binary --no-color --no-ext-diff --src-prefix=a/ --dst-prefix=b/ HEAD > "$patch"
 if [[ -s $patch ]]; then
     git -C "$dir" apply "$patch"
 fi

@@ -213,6 +213,7 @@ def main():
     gone = set()  # roots deleted since the merge base: described as they were there
     via_pkg = defaultdict(set)  # root -> pkg/ packages it imports
     unmapped = {}  # package -> number of files
+    outside = {}  # pkg/ package -> its importers outside comp/, such as the binaries' commands
     for package_dir, package_files in group_by_package(files).items():
         root, kind = package_root(package_dir)
         if not paths and not all(os.path.exists(p) for p in package_files):
@@ -228,6 +229,9 @@ def main():
             kinds[root] = kind
             continue
         reached = {package_root(d) for d in importers(package_dir)} - {(None, None)}
+        others = sorted(d for d in importers(package_dir) if package_root(d)[0] is None and d != package_dir)
+        if others:
+            outside[package_dir] = others
         if not reached:
             unmapped[package_dir] = len(package_files)
         for root, kind in reached:
@@ -255,6 +259,14 @@ def main():
             f"| `{root}` | {kind} | {team(root, rev)} | {', '.join(reached_by)} "
             f"| {', '.join(wiring(root, kinds[root], rev)) or '-'} | {shown or '-'} |"
         )
+    if outside:
+        # a cmd/ package is where a binary exposes the behavior: an entry point the component table can't show
+        print("\nImported outside comp/, by the binaries' commands and other packages:")
+        for package_dir in sorted(outside):
+            listed = outside[package_dir] if show_all else outside[package_dir][:MAX_CONSUMERS]
+            more = len(outside[package_dir]) - len(listed)
+            shown = ", ".join(f"`{d}`" for d in listed) + (f", +{more} more (--all lists them)" if more else "")
+            print(f"- `{package_dir}`: {shown}")
     if unmapped:
         print(
             "\nNo component imports these packages directly: pass their importers (`git grep -l '\"<import path>\"'`)"
