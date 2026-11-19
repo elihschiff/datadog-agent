@@ -23,11 +23,11 @@ Produce a test that catches the failures the change could introduce, at the chea
 With an argument, treat it as the feature to test. Otherwise derive the scope from the change:
 
 ```bash
-git status --short
 python3 -I .agents/skills/write-test/scripts/map_components.py
+{ git diff --name-only "$(git merge-base HEAD origin/main)"; git ls-files --others --exclude-standard; } | grep -v '\.go$'
 ```
 
-The script maps every Go file changed against `origin/main`: untracked new files, which `git diff` alone would miss, and deleted files, whose component or importers are still entry points. A package deleted entirely, with nothing left importing it, is listed with the merge-base commands to read it. It ignores other files, so read the rest of `git status --short` and `git diff --name-only origin/main...` too: a changed schema (`pkg/config/schema/yaml/`), profile or embedded YAML file names a behavior on its own, the effect of the setting or entry it changes, and its loader is the entry point for Step 1. When neither the Go files nor these identify a behavior, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
+The script maps every Go file changed between the merge base with `origin/main` and the working tree, staged and unstaged edits included: untracked new files, which `git diff` alone would miss, and deleted files, whose component or importers are still entry points. A package deleted entirely, with nothing left importing it, is listed with the merge-base commands to read it. The second command lists the other changed files against the same base: a changed schema (`pkg/config/schema/yaml/`), profile or embedded YAML file names a behavior on its own, the effect of the setting or entry it changes, and its loader is the entry point for Step 1. When neither the Go files nor these identify a behavior, or the user wants to test something other than the diff, ask which feature or behavior to test with `AskUserQuestion`, offering the candidates you can see (recent commits, the files they mention). A behavior is something a user, another component, or Datadog can observe: a payload sent to intake, a status or diagnose output, a config key's effect, a CLI result. Restate it in that form before going on, because the rest of the procedure maps and tests *that* behavior, not the files.
 
 ## Step 1 — Map the components involved
 
@@ -62,6 +62,8 @@ The audit classifies each assertion, and the assertions of one behavior can land
 Wait for `write-e2e` to finish and keep its result: whether it wrote the test, and which of its checks ran. When every assertion was handed off, write the final report (see Output) from that result, then stop; otherwise the lower-level assertions stay in scope here.
 
 A behavior often needs both: unit tests for the logic of the changed component, and one integration test proving the pipeline still carries it end to end. That pipeline test is the one most changes are missing — unit tests on each piece don't catch two pieces disagreeing (a schema rejecting what the loader produces, a payload field the forwarder drops). Propose it whenever the pipeline spans more than one component, even if the user asked for a unit test.
+
+**Replacing an existing new-e2e test.** When the request is to replace a suite with something cheaper, its assertions are the behavior: audit each of them as above. Writing the lower-level test isn't the end of it. Once that test is validated (Step 5), shrink the suite to the assertions that still need E2E, or remove it when none do. Remove what only served the removed tests too: fixtures, the package from its CI job's `TARGETS`, the job and its `.gitlab/JOBOWNERS` entry when nothing is left, then rerun gazelle. Ask before removing a suite another team owns (`.github/CODEOWNERS`). Report what became of each removed assertion under **Replaced** (see Output).
 
 ## Step 3 — Write the test
 
@@ -102,7 +104,7 @@ Run it after adding a test file or `testdata/` files, and after changing the imp
    3. **Remove the copy,** whatever the result: `git worktree remove --force <dir>`. A copy left by an interrupted run shows in `git worktree list` as a `write-test-*` entry, and is removed the same way.
 
    When the copy can't be made or the test can't run in it, report `Validated: deliberate break not run — <reason>`, and mark the test **incomplete**.
-3. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
+3. Lint, in the Go module holding the package: the linter defaults to the root module, and nested modules such as `test/new-e2e` or `pkg/util/log` have their own `go.mod`. Find it with `d=<package>; while [ ! -f "$d/go.mod" ] && [ "$d" != . ]; do d=$(dirname "$d"); done; echo "$d"`, then run `dda inv linter.go --module=<module> --targets=./<package relative to the module>` (`--module=.` for the root module). Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
 ## Output
 
@@ -120,11 +122,12 @@ Report:
 **Validated:** <the deliberate break and the failure it produced in the copy> · <the last run passing on the contributor's tree> · <lint result>
 **Handed to write-e2e:** <the assertions, and its result: test written or not, and the checks it ran> (omit when nothing was handed off)
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
+**Replaced:** <the suite, and for each of its assertions: moved to which test, or kept in E2E and why> · <the files, CI and JOBOWNERS entries removed or narrowed> (only when replacing a new-e2e test)
 ```
 
 With assertions at several levels, give the Level and Validated lines once per test. When every assertion was handed off, the report keeps Behavior, Pipeline, a Level line per assertion, Handed to write-e2e, and Not covered; drop the table and the Validated line, since no test was written here, and mark each assertion whose test `write-e2e` didn't write or validate as **incomplete**, with the reason.
 
-The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break in the copy, its last run on the contributor's tree passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error.
+The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break in the copy, its last run on the contributor's tree passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error. A replacement succeeded only when every assertion of the old suite is either covered by a validated test or still in E2E with a reason, and nothing the removed tests used is left wired.
 
 ## Example
 
