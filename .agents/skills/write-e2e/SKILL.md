@@ -7,7 +7,9 @@ argument-hint: "[behavior or feature to cover — omit to derive it from the cur
 
 Produce a mergeable E2E test for a change: correct scope, right environment, assertions that survive real infrastructure, and CI wiring that runs it.
 
-**Ownership:** the team owning `test/new-e2e/tests/<area>/` is paged when the test fails, not `@DataDog/agent-devx`, which watches `main` and release branches and dispatches flakes back to that team. That is why the JOBOWNERS entry in Step 8 and the reliability gates in Step 9 are not optional.
+**Owning team:** `@DataDog/agent-devx`, the owner of this skill.
+
+**Test ownership:** the team owning `test/new-e2e/tests/<area>/` is paged when the test fails, not `@DataDog/agent-devx`, which watches `main` and release branches and dispatches flakes back to that team. That is why the JOBOWNERS entry in Step 8 and the reliability gates in Step 9 are not optional.
 
 ## References
 
@@ -53,7 +55,12 @@ Get a per-assertion verdict, in this order:
 
 Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
-Whichever way the verdict was reached, reused or fresh, check the area before writing anything. Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, invoke it by its `name` and stop; directory-scoped skills are only offered when the working directory matches, so read the file directly when it is not in the skill list. Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
+Whichever way the verdict was reached, reused or fresh, check the area before writing anything. Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, it replaces Steps 2 to 9:
+
+1. Invoke it by its `name` with the selected scope only: the assertions kept in item 4, each with its verdict reason and the hops needing the deployed Agent. Never pass the original request, which still holds the assertions the gate dropped. Directory-scoped skills are only offered when the working directory matches, so read the file directly and follow it when it is not in the skill list.
+2. When it finishes, write this skill's Output from its result. Take `Files` from the files it created or modified, and `Local run` from the checks it ran, with their results. List under `Follow-ups` each Step 9 gate it didn't run, as a gap. When it wrote no test, say so in `Scope` with its reason, and mark each assertion it left uncovered as **incomplete**.
+
+Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
 ## Step 2 — Extend an existing suite before creating one
 

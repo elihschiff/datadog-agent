@@ -2,7 +2,7 @@
 
 An integration test runs the components of a pipeline together, in-process, so that it catches the pieces disagreeing with each other, which unit tests on each piece miss. Its value comes from what it keeps real. Each section below starts with the rule, then why it matters.
 
-Worked examples on `main`: `comp/healthplatform/invalidconfig_integration_test.go` and `comp/healthplatform/missedbytes_integration_test.go`. [#60753](https://github.com/DataDog/datadog-agent/pull/60753) adds `comp/healthplatform/invalidconfig_payload_integration_test.go`, which applies every pattern below; read it from that PR until it is merged.
+Worked examples on `main`: `comp/healthplatform/invalidconfig_integration_test.go` and `comp/healthplatform/missedbytes_integration_test.go`. [#60753](https://github.com/DataDog/datadog-agent/pull/60753) adds `comp/healthplatform/invalidconfig_payload_integration_test.go`, which applies every pattern below; read it from that PR until it reaches `main` (it merged into the branch of #60252).
 
 ## Placement and naming
 

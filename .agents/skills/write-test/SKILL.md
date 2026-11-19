@@ -88,18 +88,26 @@ Run it after adding a test file or `testdata/` files, and keep the generated `BU
 ## Step 5 — Validate
 
 1. Run it: `dda inv test --targets=./<package> --test-args='-test.v'`. Read the subtest results in the Bazel test log, not only the target status. Its path is printed for a failing target; for a passing one, targets with build-tag flavors live under a transitioned configuration that `bazel-testlogs` doesn't point to, so find it with `find "$(bazel info output_path)" -path '*/testlogs/<package>/*/test.log'`: a test that skips (for example, when a generated file is missing) passes too, and only `-test.v` prints `--- PASS` and `--- SKIP` per subtest. Add `-test.run=TestX/<case>` to iterate on one case.
-2. Prove it fails. The change under test may have uncommitted, staged and untracked edits (a new fixture), so snapshot the whole tree first, with a temporary index that leaves the real one untouched:
-   ```bash
-   baseline=$(git rev-parse --git-path write-test-baseline)
-   .agents/skills/write-test/scripts/snapshot_tree.sh > "$baseline" && [ -s "$baseline" ] || { echo "no baseline snapshot: don't break anything" >&2; false; }
-   ```
-   Break nothing until that command succeeds: without a baseline there is no way to check the tree is restored. The baseline is a file in the worktree's git directory, so it survives across commands and stays out of the snapshot. The redirect empties it before every snapshot, so a failed snapshot leaves it empty and fails the check, and the next run overwrites it: there is nothing to clean up. The script prints the staged tree and the tree of everything on disk that isn't ignored, and fails, printing nothing, on any git error.
+2. Prove it fails, by breaking the behavior once and checking the test catches it. The change under test may have uncommitted, staged and untracked edits (a new fixture), so the tree is snapshotted first and restored from that snapshot, never by undoing the break by hand.
+   1. **Look for a leftover break.** `find "$(git rev-parse --absolute-git-dir)" -maxdepth 1 -name 'write-test-baseline.*'` lists the baselines of earlier runs in this worktree. One that this run didn't create means an earlier run stopped between its break and its restore, or another run is in progress: show it to the contributor and ask before going on, since its break may still be in the tree.
+   2. **Snapshot the tree** into a baseline file of its own, so overlapping runs can't overwrite each other's:
+      ```bash
+      baseline=$(mktemp "$(git rev-parse --absolute-git-dir)/write-test-baseline.XXXXXX") && .agents/skills/write-test/scripts/snapshot_tree.sh > "$baseline" && [ -s "$baseline" ] && echo "$baseline" || { echo "no baseline snapshot: don't break anything" >&2; false; }
+      ```
+      It prints the baseline's path. Shell variables don't survive across commands, so use that path literally in the commands below. The script prints the staged tree and the tree of everything on disk that isn't ignored, computed on a copy of the index, and fails, printing nothing, on any git error. Break nothing until this command succeeds.
+   3. **Give the restore command before the break.** Choose the break: one edit to a file that already exists (an input fixture, a condition in the code). Don't create, delete or stage a file, which restoring can't undo. Then tell the contributor the command that restores it, so that an interruption leaves them a way back:
+      ```bash
+      git restore --source="$(cut -d' ' -f2 <baseline>)" --worktree -- <file>
+      ```
+      It writes the file back from the snapshot's working tree, and leaves the index alone.
+   4. **Break, run, restore.** Make the edit and run the test. It must fail with a message naming the problem: a test that still passes on the break was asserting on something else. Then run the restore command, whatever the result.
+   5. **Check the tree is restored:**
+      ```bash
+      [ -s <baseline> ] && .agents/skills/write-test/scripts/snapshot_tree.sh | cmp -s - <baseline> && rm <baseline>
+      ```
+      Treat a failed snapshot as a failed check, never as a match. On success the baseline is removed. On failure keep it, show `git status --short`, and stop.
 
-   Break the behavior once (an input fixture, a condition in the code), check that the test fails with a message naming the problem, then revert the break and compare, in any later command:
-   ```bash
-   baseline=$(git rev-parse --git-path write-test-baseline)
-   [ -s "$baseline" ] && .agents/skills/write-test/scripts/snapshot_tree.sh | cmp -s - "$baseline"
-   ``` Treat a failed snapshot as a failed check, never as a match. A test that still passes on the break was asserting on something else.
+   When the check can't be completed safely (no baseline, a leftover the contributor didn't clear, or a tree that doesn't match after the restore), don't break anything more. Report `Validated: deliberate break not run — <reason>` or `tree not restored — <what differs>, baseline kept at <path>`, and mark the test **incomplete**.
 3. Rerun the test on the restored tree and check it passes again: the final result, not the first run, is the one to report.
 4. Lint: `dda inv linter.go --targets=./<package>`. Typecheck other platforms when the test has platform-specific code (see the root `AGENTS.md`).
 
@@ -116,21 +124,32 @@ Report:
 | --- | --- | --- | --- |
 | `TestX/<case>` | `comp/...` | <components wired for real> | <dependency>: <outside the boundary because…> |
 
-**Validated:** <the deliberate break and the failure it produced> · <the rerun passing on the restored tree> · <lint result>
+**Validated:** <the deliberate break and the failure it produced> · <the snapshot matching after the restore> · <the rerun passing on the restored tree> · <lint result>
 **Handed to write-e2e:** <the assertions, and its result: test written or not, and the checks it ran> (omit when nothing was handed off)
-
-With assertions at several levels, give the Level and Validated lines once per test. When every assertion was handed off, the report keeps Behavior, Pipeline, a Level line per assertion, and Handed to write-e2e; drop the table and the Validated line, since no test was written here, and mark each assertion whose test `write-e2e` didn't write or validate as **incomplete**, with the reason.
 **Not covered:** <boundaries this test doesn't preserve, if any, and whether another level covers them>
 ```
 
-The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break, the tree snapshot matches after reverting it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error.
+With assertions at several levels, give the Level and Validated lines once per test. When every assertion was handed off, the report keeps Behavior, Pipeline, a Level line per assertion, Handed to write-e2e, and Not covered; drop the table and the Validated line, since no test was written here, and mark each assertion whose test `write-e2e` didn't write or validate as **incomplete**, with the reason.
+
+The skill succeeded when every assertion has a test that was written and validated, here or by `write-e2e`; report an assertion whose test `write-e2e` didn't write or validate as incomplete, with the reason. For each test written here: it failed on the deliberate break, the tree snapshot matches after restoring it, the rerun passes, lint is clean, and every mock in the table has a reason that places it outside the behavior's boundary. An integration test asserts on everything the behavior's contract covers (see "Assert on what the contract covers" in the integration reference); for a unit test, every case of the table asserts on an output or an error.
 
 ## Example
 
 **Input:** "Test that invalid settings in `datadog.yaml` reach intake as health issues, without leaking their values."
 
-**Pipeline:** `datadog.yaml`, `system-probe.yaml` and `DD_*` env → `comp/core/config` and `comp/core/sysprobeconfig` (load, validate with `comp/core/schema`) → `comp/healthplatform` checks → store → forwarder → intake.
+**Report:**
 
-**Level:** integration — every hop runs in-process, and intake is replaced by a local fakeintake without losing the payload boundary.
+```markdown
+**Behavior:** an invalid setting in `datadog.yaml`, `system-probe.yaml` or a `DD_*` variable reaches intake as an agent health issue naming the setting, without its value
+**Pipeline:** `datadog.yaml`, `system-probe.yaml` and `DD_*` env → `comp/core/config` and `comp/core/sysprobeconfig` (load, validate with `comp/core/schema`) → `comp/healthplatform` checks → store → forwarder → intake `/api/v2/agenthealth`
+**Level:** integration — every hop runs in-process, and intake is replaced by a local fakeintake without losing the payload boundary
 
-**Validated:** setting `DD_LOGS_ENABLED` to an invalid value in the `env_types` fixture failed the `env_types` subtest on an unexpected `/logs_enabled` issue · after the revert, the snapshot matched and the 9 subtests passed · lint clean. The first version of this test was a new-e2e suite provisioning an EC2 host per run; it became `comp/healthplatform/invalidconfig_payload_integration_test.go` ([#60753](https://github.com/DataDog/datadog-agent/pull/60753)): the same 9 scenarios and golden reports, in about 4 seconds, failing on the same regressions (in review when this skill was written). What it no longer covers — a real secret backend binary and the systemd environment file — is listed under "Not covered".
+| Test | Package | Real | Mocked, and why |
+| --- | --- | --- | --- |
+| `TestInvalidConfigPayload/<scenario>`, 9 scenarios | `comp/healthplatform` | config and sysprobeconfig loading from files and `DD_*` variables, schema validation, healthplatform checks and store, forwarder | intake: an in-process fakeintake, which receives the same HTTP payload · secrets: the secrets mock, resolving `ENC[]` handles from `secrets.json`, since settings are validated before their handles are resolved and the backend binary is outside the payload boundary · log, telemetry, hostname, workloadmeta: their mocks, since no assertion reads them |
+
+**Validated:** setting `DD_LOGS_ENABLED` to an invalid value in the `env_types` fixture failed the `env_types` subtest on an unexpected `/logs_enabled` issue · after the restore, the snapshot matched · the 9 subtests passed on the rerun · lint clean
+**Not covered:** a real secret backend binary, the systemd environment file setting `DD_*` variables, and the packaged Agent's hostname and version. No other level covers them; keeping one new-e2e scenario as a smoke test would
+```
+
+The first version of this test was a new-e2e suite provisioning an EC2 host per run. It became `comp/healthplatform/invalidconfig_payload_integration_test.go` ([#60753](https://github.com/DataDog/datadog-agent/pull/60753), not yet on `main` when this skill was written): the same 9 scenarios and golden reports, in about 4 seconds, failing on the same regressions.
