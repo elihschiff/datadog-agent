@@ -36,12 +36,19 @@ def git(*args):
 
 
 def changed_go_files():
-    """Return the merge base and the Go files changed since it, deleted ones included: they are entry points too."""
+    """Return the merge base and the Go files changed since it, deleted ones and the sources of renames included: they are entry points too."""
     try:
         base = git("merge-base", "HEAD", "origin/main").strip()
     except subprocess.CalledProcessError:
         sys.exit("origin/main not found: fetch it (git fetch origin main), or pass the paths to map explicitly.")
-    tracked = git("diff", "--name-only", base).splitlines()
+    tracked = []
+    # --name-status keeps both paths of a rename or copy: the old package and its importers are entry points too
+    fields = git("diff", "--name-status", "-z", base).split("\0")
+    i = 0
+    while i < len(fields) and fields[i]:
+        count = 2 if fields[i][0] in "RC" else 1
+        tracked += fields[i + 1 : i + 1 + count]
+        i += 1 + count
     untracked = git("ls-files", "--others", "--exclude-standard").splitlines()
     return base, sorted({p for p in tracked + untracked if p.endswith(".go")})
 

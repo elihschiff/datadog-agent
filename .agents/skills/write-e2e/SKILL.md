@@ -21,6 +21,7 @@ The body carries the procedure; the references carry the lookup tables. Load a f
 | `references/templates.md` | You need a skeleton other than the Step 5 one, you are splitting a suite across operating systems, or you need to mark a known flake or collect diagnostics on failure. |
 | `references/fakeintake.md` | The test asserts on a payload — before writing the first such assertion, or when the payload you need has no client method yet. |
 | `references/ci-wiring.md` | You are adding a new test package or changing which build artifacts a test consumes. |
+| `references/area-skills.md` | Step 1 finds a directory-scoped skill for the area — before invoking it. |
 | `references/api-traps.md` | You are working from an internal Confluence E2E page, an older branch, or any snippet whose form you cannot find in use under `test/new-e2e/tests/`. |
 
 The repo is the source of truth; this skill is the procedure. Resolve an option by grepping its definition (`grep -n '^func With' <provisioner-dir>/*.go`) rather than recalling it.
@@ -55,13 +56,7 @@ Get a per-assertion verdict, in this order:
 
 Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
-Whichever way the verdict was reached, reused or fresh, check the area before writing anything. Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, it replaces Steps 2 to 9 for the assertions it covers:
-
-1. **Check what it writes.** Read its description, its `argument-hint`, the checks it makes on its argument, and the assertions its template prescribes. Delegate only when those assertions are the selected ones, no fewer and no more, and when the environment and OS its template provisions honor the constraints of the request (`--env`, `--os`, or stated in words): a skill adding checks the gate dropped widens the scope past the audit, and one skipping some leaves them uncovered. `write-agent-health-e2e`, for example, takes one existing issue module under `comp/healthplatform/issues/` and asserts both its detection and its resolution, with their payload fields. It fits a selection holding that module's detection and resolution on its default Linux host, but not a selection with only its detection, a service-restart assertion in the same area, or `--os windows`. When it doesn't fit, follow Steps 2 to 9 here instead, reading the area skill for the area's conventions.
-2. **Invoke it** by its `name`, with exactly the argument its `argument-hint` names and nothing else: `write-agent-health-e2e` reads its whole argument as the module directory, so `rofspermissions`, not the assertions. Keep the delegated assertions, their verdict reasons and hops here, to check its result against. Never pass the original request, which still holds the assertions the gate dropped. Directory-scoped skills are only offered when the working directory matches, so read the file directly and follow it when it is not in the skill list.
-3. **Keep Step 9's approval rule.** Show each command it runs that provisions cloud infrastructure, and get agreement before running it, even when the area skill says to run it directly.
-4. **Finish Step 9.** An area skill's own verification can be narrower than Step 9: `write-agent-health-e2e` lints and runs its suite once. Track G1 to G5 for its result, and run each gate it didn't, in order, filtered to the suite it wrote (`--run '^TestX$'`) and under the same approval rule. For `write-agent-health-e2e` that leaves G2's dependency scan, G3's CI wiring and JOBOWNERS entry, the three G4 runs and G5's wall-time comparison.
-5. **Report per assertion.** Write this skill's Output from its result. In `Scope`, give each delegated assertion its test (file and test name) and its validation: `validated` only when every Step 9 gate passed with that test, otherwise **written, not validated** (the gates that didn't run or failed, and the targeted run that passed, if any) or **incomplete** (no test, with the reason). Take `Files` from the files it created or modified, and `Local run` from every check run, its own and Step 9's, with their results. List under `Follow-ups` each Step 9 gate still not run, as a gap.
+Whichever way the verdict was reached, reused or fresh, check the area before writing anything. Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, load `references/area-skills.md` before invoking it: it says when the area skill fits the selected assertions, how to invoke it, and how to finish Step 9 after it, which the area skill alone does not.
 
 Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
 
@@ -235,6 +230,8 @@ E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '
 dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
 ```
 
+Check in each run's output that every subtest it should run, the new ones at least, is reported as passed by its full name (`--- PASS: TestX/.../SubB`). A `--run` filter that matches the suite's entry point but none of its subtests still ends green without running a single assertion: such a run doesn't count for G4.
+
 Dropping `E2E_DEV_MODE` on the last run is what releases the infrastructure, and it releases only this suite's stack. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
 
 Show these commands and get agreement before running any of them. Compilation alone is not evidence the test works, so treat skipping G4 as a gap to report rather than a shortcut.
@@ -250,6 +247,8 @@ Local run    command, result, wall time
 CI           the rule/job/JOBOWNERS diffs, or "none needed" and why
 Follow-ups   flake exposure, budget headroom, QA label, PR-branch coverage
 ```
+
+When the assertions span several areas, give `Files`, `Environment`, `Assertions`, `Local run` and `CI` once per suite, each with the suite's validation status: `validated` only when every Step 9 gate passed for it.
 
 Filled in, for a diff that added a `disk.free` metric:
 
