@@ -221,7 +221,8 @@ G4 is the only gate that provisions real cloud infrastructure, and it takes 10â€
 
 ```bash
 # 1. One subtest on fresh infrastructure â€” proves it does not depend on a sibling.
-E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^SubB$'
+#    A testify suite nests subtests under the method: TestX/TestMethod/SubB.
+E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^TestMethod$/^SubB$'
 # 2. The whole suite, reusing that stack. Filter on its entry point: an area often
 #    holds several suites, each provisioning its own stack.
 E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
@@ -230,9 +231,9 @@ E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '
 dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
 ```
 
-Check in each run's output that every subtest it should run, the new ones at least, is reported as passed by its full name (`--- PASS: TestX/.../SubB`). A `--run` filter that matches the suite's entry point but none of its subtests still ends green without running a single assertion: such a run doesn't count for G4.
+Check in each run's output that every subtest it should run, the new ones at least, is reported as passed by its full name (`--- PASS: TestX/TestMethod/SubB`). A `--run` filter that matches the suite's entry point but none of its subtests still ends green without running a single assertion: such a run doesn't count for G4.
 
-Dropping `E2E_DEV_MODE` on the last run is what releases the infrastructure, and it releases only this suite's stack. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
+Dropping `E2E_DEV_MODE` on the last run is what releases the infrastructure, and it releases only this suite's stack. When G4 stops before that run, on a failure, a run that matched no assertion, or an interruption, release the stack before stopping: `E2E_TEARDOWN_ONLY=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'` skips setup and tests and destroys only the stack of the suite it selects. Report the release with the failure. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
 
 Show these commands and get agreement before running any of them. Compilation alone is not evidence the test works, so treat skipping G4 as a gap to report rather than a shortcut.
 

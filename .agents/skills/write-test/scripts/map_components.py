@@ -53,6 +53,40 @@ def changed_go_files():
     return base, sorted({p for p in tracked + untracked if p.endswith(".go")})
 
 
+@functools.cache
+def tree_files(rev):
+    """Return the set of files and the set of directories of the tree at rev."""
+    files = set(git("ls-tree", "-r", "--name-only", rev).splitlines())
+    dirs = {os.path.dirname(f) for f in files}
+    for d in list(dirs):
+        while d:
+            d = os.path.dirname(d)
+            dirs.add(d)
+    return files, dirs
+
+
+def exists(path, rev=None):
+    return os.path.exists(path) if rev is None else path in tree_files(rev)[0]
+
+
+def isdir(path, rev=None):
+    return os.path.isdir(path) if rev is None else path in tree_files(rev)[1]
+
+
+def read(path, rev=None):
+    if rev is None:
+        with open(path, encoding="utf-8") as f:
+            return f.read()
+    return git("show", f"{rev}:{path}")
+
+
+def listdir(directory, rev=None):
+    if rev is None:
+        return os.listdir(directory)
+    prefix = directory + "/"
+    return sorted({f[len(prefix) :].split("/")[0] for f in tree_files(rev)[0] if f.startswith(prefix)})
+
+
 def expand(paths):
     """Return the Go files of the given files and directories, warning about the arguments that hold none."""
     files = []
@@ -78,76 +112,81 @@ def group_by_package(files):
 
 
 @functools.cache
-def package_root(directory):
-    """Return (root, kind) of the component or bundle containing the package directory, or (None, None)."""
+def package_root(directory, rev=None):
+    """Return (root, kind) of the component or bundle containing the package directory, or (None, None).
+
+    rev reads the tree at that revision instead of the working tree.
+    """
     while directory.startswith("comp/"):
         # def/, fx/, impl/... belong to the component above them, even when they hold a component.go
         if os.path.basename(directory) not in COMPONENT_SUBDIRS:
-            if os.path.exists(os.path.join(directory, "def", "component.go")):
+            if exists(os.path.join(directory, "def", "component.go"), rev):
                 return directory, "component"
-            if os.path.exists(os.path.join(directory, "component.go")):
+            if exists(os.path.join(directory, "component.go"), rev):
                 return directory, "component (legacy layout)"
-            if os.path.exists(os.path.join(directory, "bundle.go")):
+            if exists(os.path.join(directory, "bundle.go"), rev):
                 return directory, "bundle"
         directory = os.path.dirname(directory)
     return None, None
 
 
-def team(root):
+def team(root, rev=None):
     for name in ("def/component.go", "component.go", "bundle.go"):
         candidate = os.path.join(root, name)
-        if os.path.exists(candidate):
-            with open(candidate, encoding="utf-8") as f:
-                match = re.search(r"^// team: (.+)$", f.read(), re.MULTILINE)
+        if exists(candidate, rev):
+            match = re.search(r"^// team: (.+)$", read(candidate, rev), re.MULTILINE)
             if match:
                 return match.group(1).strip()
     return "?"
 
 
-def declares_module(directory):
+def declares_module(directory, rev=None):
     """Return whether a non-test Go file of the directory declares a Module() function."""
-    for name in os.listdir(directory):
+    for name in listdir(directory, rev):
         if name.endswith(".go") and not name.endswith("_test.go"):
-            with open(os.path.join(directory, name), encoding="utf-8") as f:
-                if re.search(r"^func Module\(", f.read(), re.MULTILINE):
-                    return True
+            if re.search(r"^func Module\(", read(os.path.join(directory, name), rev), re.MULTILINE):
+                return True
     return False
 
 
-def wiring(root, kind):
+def wiring(root, kind, rev=None):
     """List what can build the component in a test."""
-    found = [f"`{d}/`" for d in WIRING_DIRS if os.path.isdir(os.path.join(root, d))]
+    found = [f"`{d}/`" for d in WIRING_DIRS if isdir(os.path.join(root, d), rev)]
     if kind == "bundle":
         found.insert(0, "`Bundle()`")
     elif kind == "component (legacy layout)":
         # the root package holds the fx module and, often, the mock
-        if declares_module(root):
+        if declares_module(root, rev):
             found.insert(0, "root `Module()`")
-        found += [f"`{name}`" for name in sorted(os.listdir(root)) if name.endswith("_mock.go")]
+        found += [f"`{name}`" for name in sorted(listdir(root, rev)) if name.endswith("_mock.go")]
     return found
 
 
-def public_packages(root):
+def public_packages(root, rev=None):
     """Return the packages other code imports to use or wire the component: its interface and its fx modules.
 
     Importers of def/ use the component; importers of fx/ (or fx-mock/, fx-noop/) assemble it, which is how a bundle
     or a binary that wires the pipeline shows up.
     """
     packages = [os.path.join(root, d) for d in ["def"] + [w for w in WIRING_DIRS if w.startswith("fx")]]
-    packages = [p for p in packages if os.path.isdir(p)]
+    packages = [p for p in packages if isdir(p, rev)]
     return packages or [root]
 
 
 @functools.cache
-def importers(package_dir):
-    """Return the directories of the non-test Go files importing package_dir."""
+def importers(package_dir, rev=None):
+    """Return the directories of the non-test Go files importing package_dir, in the working tree or at rev."""
     pattern = f'"{MODULE}/{package_dir}"'
+    # --untracked: a new component's importers may not be committed yet, like the component itself
+    where = ["--untracked"] if rev is None else []
+    revs = [] if rev is None else [rev]
     try:
-        # --untracked: a new component's importers may not be committed yet, like the component itself
-        output = git("grep", "-l", "--untracked", "--fixed-strings", pattern, "--", "*.go", ":!*_test.go")
+        output = git("grep", "-l", *where, "--fixed-strings", pattern, *revs, "--", "*.go", ":!*_test.go")
     except subprocess.CalledProcessError:  # no match
         return frozenset()
-    return frozenset(os.path.dirname(p) for p in output.splitlines())
+    # at a revision, git grep prefixes each path with "<rev>:"
+    paths = [p.split(":", 1)[1] if rev is not None else p for p in output.splitlines()]
+    return frozenset(os.path.dirname(p) for p in paths)
 
 
 def main():
@@ -171,10 +210,18 @@ def main():
 
     changed = defaultdict(set)  # root -> changed files
     kinds = {}
+    gone = set()  # roots deleted since the merge base: described as they were there
     via_pkg = defaultdict(set)  # root -> pkg/ packages it imports
     unmapped = {}  # package -> number of files
     for package_dir, package_files in group_by_package(files).items():
         root, kind = package_root(package_dir)
+        if not paths and not all(os.path.exists(p) for p in package_files):
+            # a deleted file belongs to the component that held it at the merge base, which may be deleted too: in
+            # the working tree, its directory would be attributed to a surviving parent bundle
+            old_root, old_kind = package_root(package_dir, base)
+            if old_root and package_root(old_root) != (old_root, old_kind):
+                root, kind = old_root, old_kind
+                gone.add(root)
         if root:
             changed[root].update(package_files)
             kinds[root] = kind
@@ -189,20 +236,23 @@ def main():
     print("| Component | Kind | Team | Reached by | Test wiring | Consumers |")
     print("| --- | --- | --- | --- | --- | --- |")
     for root in sorted(set(changed) | set(via_pkg)):
+        rev = base if root in gone else None
         reached_by = sorted(
             f"`{os.path.relpath(p, root)}`" + ("" if os.path.exists(p) else " (deleted)") for p in changed.get(root, ())
         )
         reached_by += sorted(f"imports `{p}`" for p in via_pkg.get(root, ()))
         consumers = sorted(
-            {package_root(d)[0] or d for package in public_packages(root) for d in importers(package)} - {root}
+            {package_root(d, rev)[0] or d for package in public_packages(root, rev) for d in importers(package, rev)}
+            - {root}
         )
         listed = consumers if show_all else consumers[:MAX_CONSUMERS]
         shown = ", ".join(f"`{c}`" for c in listed)
         if len(consumers) > len(listed):
             shown += f", +{len(consumers) - len(listed)} more (--all lists them)"
+        kind = kinds[root] + (f", deleted: as at `{base}`" if root in gone else "")
         print(
-            f"| `{root}` | {kinds[root]} | {team(root)} | {', '.join(reached_by)} "
-            f"| {', '.join(wiring(root, kinds[root])) or '-'} | {shown or '-'} |"
+            f"| `{root}` | {kind} | {team(root, rev)} | {', '.join(reached_by)} "
+            f"| {', '.join(wiring(root, kinds[root], rev)) or '-'} | {shown or '-'} |"
         )
     if unmapped:
         print(
