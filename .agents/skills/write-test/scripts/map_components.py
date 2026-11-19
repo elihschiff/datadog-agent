@@ -51,13 +51,14 @@ def expand(paths):
     files = []
     for path in paths:
         if os.path.isdir(path):
-            found = [p for p in git("ls-files", "--", path).splitlines() if p.endswith(".go")]
+            listed = git("ls-files", "--cached", "--others", "--exclude-standard", "--", path).splitlines()
+            found = [p for p in listed if p.endswith(".go") and os.path.exists(p)]
         elif os.path.isfile(path) and path.endswith(".go"):
             found = [path]
         else:
             found = []
         if not found:
-            print(f"warning: ignoring `{path}`: not a Go file or a directory holding tracked Go files", file=sys.stderr)
+            print(f"warning: ignoring `{path}`: not a Go file or a directory holding Go files", file=sys.stderr)
         files += found
     return files
 
@@ -135,7 +136,8 @@ def importers(package_dir):
     """Return the directories of the non-test Go files importing package_dir."""
     pattern = f'"{MODULE}/{package_dir}"'
     try:
-        output = git("grep", "-l", "--fixed-strings", pattern, "--", "*.go", ":!*_test.go")
+        # --untracked: a new component's importers may not be committed yet, like the component itself
+        output = git("grep", "-l", "--untracked", "--fixed-strings", pattern, "--", "*.go", ":!*_test.go")
     except subprocess.CalledProcessError:  # no match
         return frozenset()
     return frozenset(os.path.dirname(p) for p in output.splitlines())

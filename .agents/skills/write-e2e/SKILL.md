@@ -57,10 +57,10 @@ Gating before Step 2 is deliberate — reading implementations for the literals 
 
 Whichever way the verdict was reached, reused or fresh, check the area before writing anything. Some areas own their own template and lifecycle rules through a directory-scoped skill: `ls test/new-e2e/tests/<area>/.claude/skills/*/SKILL.md`. If one exists, it replaces Steps 2 to 9 for the assertions it covers:
 
-1. **Check what it writes.** Read its description, its `argument-hint`, the checks it makes on its argument, and the assertions its template prescribes. Delegate only when those assertions are the selected ones, no fewer and no more: a skill adding checks the gate dropped widens the scope past the audit, and one skipping some leaves them uncovered. `write-agent-health-e2e`, for example, takes one existing issue module under `comp/healthplatform/issues/` and asserts both its detection and its resolution, with their payload fields. It fits a selection holding that module's detection and resolution, but not a selection with only its detection, or a service-restart assertion in the same area. When it doesn't fit, follow Steps 2 to 9 here instead, reading the area skill for the area's conventions.
+1. **Check what it writes.** Read its description, its `argument-hint`, the checks it makes on its argument, and the assertions its template prescribes. Delegate only when those assertions are the selected ones, no fewer and no more, and when the environment and OS its template provisions honor the constraints of the request (`--env`, `--os`, or stated in words): a skill adding checks the gate dropped widens the scope past the audit, and one skipping some leaves them uncovered. `write-agent-health-e2e`, for example, takes one existing issue module under `comp/healthplatform/issues/` and asserts both its detection and its resolution, with their payload fields. It fits a selection holding that module's detection and resolution on its default Linux host, but not a selection with only its detection, a service-restart assertion in the same area, or `--os windows`. When it doesn't fit, follow Steps 2 to 9 here instead, reading the area skill for the area's conventions.
 2. **Invoke it** by its `name`, with exactly the argument its `argument-hint` names and nothing else: `write-agent-health-e2e` reads its whole argument as the module directory, so `rofspermissions`, not the assertions. Keep the delegated assertions, their verdict reasons and hops here, to check its result against. Never pass the original request, which still holds the assertions the gate dropped. Directory-scoped skills are only offered when the working directory matches, so read the file directly and follow it when it is not in the skill list.
 3. **Keep Step 9's approval rule.** Show each command it runs that provisions cloud infrastructure, and get agreement before running it, even when the area skill says to run it directly.
-4. **Finish Step 9.** An area skill's own verification can be narrower than Step 9: `write-agent-health-e2e` lints and runs one suite. Run the gates it didn't, G3 for the CI wiring and JOBOWNERS entry, and the three G4 runs, under the same approval rule.
+4. **Finish Step 9.** An area skill's own verification can be narrower than Step 9: `write-agent-health-e2e` lints and runs its suite once. Track G1 to G5 for its result, and run each gate it didn't, in order, filtered to the suite it wrote (`--run '^TestX$'`) and under the same approval rule. For `write-agent-health-e2e` that leaves G2's dependency scan, G3's CI wiring and JOBOWNERS entry, the three G4 runs and G5's wall-time comparison.
 5. **Report per assertion.** Write this skill's Output from its result. In `Scope`, give each delegated assertion its test (file and test name) and its validation: `validated` only when every Step 9 gate passed with that test, otherwise **written, not validated** (the gates that didn't run or failed, and the targeted run that passed, if any) or **incomplete** (no test, with the reason). Take `Files` from the files it created or modified, and `Local run` from every check run, its own and Step 9's, with their results. List under `Follow-ups` each Step 9 gate still not run, as a gap.
 
 Sibling skills named elsewhere in this file live under `.agents/skills/<name>/SKILL.md`.
@@ -227,11 +227,12 @@ G4 is the only gate that provisions real cloud infrastructure, and it takes 10�
 ```bash
 # 1. One subtest on fresh infrastructure — proves it does not depend on a sibling.
 E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^SubB$'
-# 2. The whole suite, reusing that stack.
-E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/...
+# 2. The whole suite, reusing that stack. Filter on its entry point: an area often
+#    holds several suites, each provisioning its own stack.
+E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
 # 3. Again, without dev mode — a second green run proves each test left the
 #    environment as it found it, and the suite destroys its own stack on the way out.
-dda inv new-e2e-tests.run --targets=./tests/<area>/...
+dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
 ```
 
 Dropping `E2E_DEV_MODE` on the last run is what releases the infrastructure, and it releases only this suite's stack. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
