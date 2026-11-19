@@ -87,7 +87,7 @@ Some state is process-wide and outside your control: metrics registered in the g
 
 When the output reports changes since its previous emission (agent telemetry reports counters as deltas), have each scenario build its own pipeline and take a first, baseline output before acting. The scenario then asserts on what it caused only, whatever ran before it in the process.
 
-Restore every global you change (configurations, override functions, registries, environment variables) with `t.Cleanup`. Don't run these tests with `t.Parallel()` when they replace process-wide state. Check that the test also passes when run alone (`dda inv test --targets=./<package> --test-args='-test.run=TestX/<case>'`), not only after the other tests of the package.
+Restore every global you change (configurations, override functions, registries, environment variables) with `t.Cleanup`. Don't run these tests with `t.Parallel()` when they replace process-wide state. Check that the test also passes when run alone (`dda inv test --targets=./<package> --test-args='-test.run=^TestX$/^<case>$'`), not only after the other tests of the package.
 
 ## Say what's not covered
 

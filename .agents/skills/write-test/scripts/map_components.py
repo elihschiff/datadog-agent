@@ -219,7 +219,8 @@ def main():
             # a deleted file belongs to the component that held it at the merge base, which may be deleted too: in
             # the working tree, its directory would be attributed to a surviving parent bundle
             old_root, old_kind = package_root(package_dir, base)
-            if old_root and package_root(old_root) != (old_root, old_kind):
+            # a root still holding a component, in another layout, is described as it is now
+            if old_root and package_root(old_root)[0] != old_root:
                 root, kind = old_root, old_kind
                 gone.add(root)
         if root:

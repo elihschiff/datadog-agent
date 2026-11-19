@@ -220,7 +220,7 @@ G2 flags candidates for review, not violations. A parameterised registry such as
 G4 is the only gate that provisions real cloud infrastructure, and it takes 10–40 minutes. Dev mode keeps the stack alive between runs, so all three live checks share one provision. The stack is named after the suite (`e2e-<Suite>-<package hash>`), so another session validating the same suite under the same profile would share it: give this session's stack a suffix of its own, and pass it to every run and to the teardown:
 
 ```bash
-suffix=wt$(date +%s)  # once per validation session
+suffix=wt$(openssl rand -hex 4)  # random, once per validation session
 # 1. One subtest on fresh infrastructure — proves it does not depend on a sibling.
 #    A testify suite nests subtests under the method: TestX/TestMethod/SubB.
 E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^TestMethod$/^SubB$' --stack-name-suffix=$suffix
@@ -229,18 +229,18 @@ E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '
 E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
 # 3. Again, without dev mode — a second green run proves each test left the
 #    environment as it found it, and the suite destroys its own stack on the way out.
-E2E_DEV_MODE=false dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
+E2E_DEV_MODE=false E2E_INIT_ONLY=false dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
 ```
 
 Check in each run's output that every subtest it should run, the new ones at least, is reported as passed by its full name (`--- PASS: TestX/TestMethod/SubB`). A `--run` filter that matches the suite's entry point but none of its subtests still ends green without running a single assertion: such a run doesn't count for G4.
 
-The last run releases the infrastructure, and only this session's stack. Set `E2E_DEV_MODE=false` on it explicitly rather than leaving the variable out: dev mode inherited from the shell skips the deletion. When G4 stops before that run, on a failure, a run that matched no assertion, or an interruption, release the stack before stopping:
+The last run releases the infrastructure, and only this session's stack. Set `E2E_DEV_MODE=false` and `E2E_INIT_ONLY=false` on it explicitly rather than leaving the variables out: either mode, inherited from the shell, skips the deletion. When G4 stops before that run, on a failure, a run that matched no assertion, or an interruption, release the stack before stopping:
 
 ```bash
-E2E_DEV_MODE=false E2E_TEARDOWN_ONLY=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
+E2E_DEV_MODE=false E2E_INIT_ONLY=false E2E_TEARDOWN_ONLY=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
 ```
 
-It skips setup and tests and destroys only the stack of the suite it selects, with this session's suffix. Either way, report the stack as released only when the output logs `Destroying stack e2e-<Suite>-<hash>-<suffix>` with no destroy error after it; otherwise report it as still running, with its name. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
+It skips setup and tests and destroys only the stack of the suite it selects, with this session's suffix. Either way, report the stack as released only when the command ran to completion and exited 0, and its output logs `Destroying stack e2e-<Suite>-<hash>-<suffix>` with no destroy error after it: that line is printed before the destroy starts, so an interrupted run prints it too. Otherwise report the stack as still running, with its name. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
 
 Show these commands and get agreement before running any of them. Compilation alone is not evidence the test works, so treat skipping G4 as a gap to report rather than a shortcut.
 
