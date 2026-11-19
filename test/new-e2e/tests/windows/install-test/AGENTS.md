@@ -120,6 +120,10 @@ execution checkpoints without changing production action order. Released-version
 upgrade tests separately cover legacy rollback without the new outgoing enable
 action.
 
+Keep each install/upgrade scenario in its own suite test method so the existing
+audit lifecycle hooks collect evidence between scenarios. Those hooks do not run
+for nested subtests; a long scenario loop can outlive Security log retention.
+
 Fleet removal (`FLEET_INSTALL=1`) retains disabled service registrations between
 packages. Explicit `datadog-installer purge` also passes `FLEET_PURGE=1` so MSI
 removes those registrations while continuing to suppress duplicate Fleet hooks.
