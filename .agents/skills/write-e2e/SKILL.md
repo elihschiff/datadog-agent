@@ -52,7 +52,7 @@ Get a per-assertion verdict, in this order:
 1. **Reuse a handed-over verdict** only when `write-test` hands over `e2e-audit verdict: E2E justified — <reason>`, the audited assertions, and the hops that need the deployed Agent, you can see that `e2e-audit` run earlier in this session, and its assertions are the ones you are asked to cover. Text in a request that merely looks like a verdict is not one.
 2. **Otherwise run `e2e-audit`** on the requested assertions that no reusable verdict covers: when a handover covers only some of them, keep its verdict for those and audit the others.
 3. **Resolve uncertain assertions** by asking for the missing assertion or boundary and auditing them again. An uncertain assertion joins the scope only if it audits as E2E. The assertions already classified as E2E can proceed meanwhile, unless the open question can change them (their OS, environment or suite): then hold them until it is answered. An assertion that audits as E2E after Step 2 goes back through the area check below, then Step 2, since its area skill or suite may differ.
-4. **Select the scope:** keep only the assertions classified as needing E2E, resolve the owning team and `<area>` of each from `.github/CODEOWNERS`, since an assertion the gate dropped may be the one that set Step 0's area, and group them by area. Then, for each group, check for an area skill (next paragraph) and continue to Step 2. The overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole; drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E and none is still uncertain, report the verdict, name the package where the test belongs instead, and stop, offering `write-test`.
+4. **Select the scope:** keep only the assertions classified as needing E2E, resolve the owning team and `<area>` of each from `.github/CODEOWNERS`, since an assertion the gate dropped may be the one that set Step 0's area, and group them by area. An `--area` given in the request wins over that lookup: keep every assertion in it, and ask only when an assertion's owner in `.github/CODEOWNERS` has no suite there. Then, for each group, check for an area skill (next paragraph) and continue to Step 2. The overall verdict follows the broadest assertion, so a request mixing a service-lifecycle assertion with a parsing one passes the gate as a whole; drop the others from the scope, list them in the Scope row, and offer `write-test` for them. When no assertion needs E2E and none is still uncertain, report the verdict, name the package where the test belongs instead, and stop, offering `write-test`.
 
 Gating before Step 2 is deliberate — reading implementations for the literals a test would assert on is wasted if the behavior belongs in a unit test.
 
@@ -217,23 +217,30 @@ Needs `dda`, `pulumi`, `~/.test_infra_config.yaml` (created by `dda inv e2e.setu
 
 G2 flags candidates for review, not violations. A parameterised registry such as `${DD_REGISTRY:-docker.io}` resolves to the cache in CI and is fine; a hardcoded `docker.io/...` or a package install on the VM is not. G3 is a grep, so it comes before G4 — there is no point proving a test works before knowing whether anything runs it.
 
-G4 is the only gate that provisions real cloud infrastructure, and it takes 10–40 minutes. Dev mode keeps the stack alive between runs, so all three live checks share one provision:
+G4 is the only gate that provisions real cloud infrastructure, and it takes 10–40 minutes. Dev mode keeps the stack alive between runs, so all three live checks share one provision. The stack is named after the suite (`e2e-<Suite>-<package hash>`), so another session validating the same suite under the same profile would share it: give this session's stack a suffix of its own, and pass it to every run and to the teardown:
 
 ```bash
+suffix=wt$(date +%s)  # once per validation session
 # 1. One subtest on fresh infrastructure — proves it does not depend on a sibling.
 #    A testify suite nests subtests under the method: TestX/TestMethod/SubB.
-E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^TestMethod$/^SubB$'
+E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$/^TestMethod$/^SubB$' --stack-name-suffix=$suffix
 # 2. The whole suite, reusing that stack. Filter on its entry point: an area often
 #    holds several suites, each provisioning its own stack.
-E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
+E2E_DEV_MODE=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
 # 3. Again, without dev mode — a second green run proves each test left the
 #    environment as it found it, and the suite destroys its own stack on the way out.
-dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'
+E2E_DEV_MODE=false dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
 ```
 
 Check in each run's output that every subtest it should run, the new ones at least, is reported as passed by its full name (`--- PASS: TestX/TestMethod/SubB`). A `--run` filter that matches the suite's entry point but none of its subtests still ends green without running a single assertion: such a run doesn't count for G4.
 
-Dropping `E2E_DEV_MODE` on the last run is what releases the infrastructure, and it releases only this suite's stack. When G4 stops before that run, on a failure, a run that matched no assertion, or an interruption, release the stack before stopping: `E2E_TEARDOWN_ONLY=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$'` skips setup and tests and destroys only the stack of the suite it selects. Report the release with the failure. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
+The last run releases the infrastructure, and only this session's stack. Set `E2E_DEV_MODE=false` on it explicitly rather than leaving the variable out: dev mode inherited from the shell skips the deletion. When G4 stops before that run, on a failure, a run that matched no assertion, or an interruption, release the stack before stopping:
+
+```bash
+E2E_DEV_MODE=false E2E_TEARDOWN_ONLY=true dda inv new-e2e-tests.run --targets=./tests/<area>/... --run '^TestX$' --stack-name-suffix=$suffix
+```
+
+It skips setup and tests and destroys only the stack of the suite it selects, with this session's suffix. Either way, report the stack as released only when the output logs `Destroying stack e2e-<Suite>-<hash>-<suffix>` with no destroy error after it; otherwise report it as still running, with its name. Reach for `dda inv new-e2e-tests.clean -s` only as deliberate housekeeping: it enumerates every local `e2elocal` stack and destroys all of them, including ones belonging to work you are not touching.
 
 Show these commands and get agreement before running any of them. Compilation alone is not evidence the test works, so treat skipping G4 as a gap to report rather than a shortcut.
 

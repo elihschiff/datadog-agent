@@ -16,6 +16,7 @@ Produce a test that catches the failures the change could introduce, at the chea
 | File | Load when |
 |---|---|
 | `references/integration.md` | Step 3 picks an integration test — before writing it. It holds the wiring patterns and the pitfalls that make such tests weak or flaky. |
+| `references/replacing-e2e.md` | The request is to replace an existing new-e2e suite with cheaper tests — before auditing it. |
 | `doc/guidelines/testing/test-categories.md` | You need the repository's definition of a test category to explain a verdict. |
 
 ## Step 0 — Establish the scope
@@ -63,7 +64,7 @@ Wait for `write-e2e` to finish and keep its result: whether it wrote the test, a
 
 A behavior often needs both: unit tests for the logic of the changed component, and one integration test proving the pipeline still carries it end to end. That pipeline test is the one most changes are missing — unit tests on each piece don't catch two pieces disagreeing (a schema rejecting what the loader produces, a payload field the forwarder drops). Propose it whenever the pipeline spans more than one component, even if the user asked for a unit test.
 
-**Replacing an existing new-e2e test.** When the request is to replace a suite with something cheaper, its assertions are the behavior. Invoke `e2e-audit` with the suite's concrete path rather than a description of it: its procedure for existing tests follows the suite's setup, helpers and provisioners, which hold coverage its test bodies don't show (a service restart in setup, an install in the provisioner), and returns a verdict per assertion. Split them as above, with one difference: an assertion that still needs E2E stays in the suite as it is, and goes to `write-e2e` only when the audit says the suite lacks coverage it needs. Writing the lower-level test isn't the end of it: shrink the suite to the assertions that still need E2E, or remove it when none do. Remove an assertion from it only once the test replacing that assertion is validated (Step 5); keep in the suite any assertion still uncertain, or whose replacement isn't validated, and report it as kept with the reason. Remove what only served the removed tests too: fixtures, the package from its CI job's `TARGETS`, the job and its `.gitlab/JOBOWNERS` entry when nothing is left, then rerun gazelle. Then check that the shrunk suite still holds: removing a test or a fixture can break the shared setup a kept assertion relies on. Lint it (`dda inv linter.go --module=test/new-e2e --targets=./tests/<area>`), and run its kept assertions with `write-e2e`'s Step 9 G4, which provisions cloud infrastructure, so show the commands and get agreement first; when that run doesn't happen, report the kept assertions as **not re-run**. Ask before removing a suite another team owns (`.github/CODEOWNERS`). Report what became of each removed assertion under **Replaced** (see Output).
+**Replacing an existing new-e2e test.** When the request is to replace a suite with something cheaper, load `references/replacing-e2e.md` before auditing: the suite's assertions are the behavior, and it says how to audit them, which to move, and how to shrink the suite and its CI wiring without dropping coverage.
 
 ## Step 3 — Write the test
 

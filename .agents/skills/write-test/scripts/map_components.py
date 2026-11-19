@@ -261,7 +261,8 @@ def main():
         print("to this script to follow the pipeline up to a component, or test them as plain packages:")
         for package_dir in sorted(unmapped):
             print(f"- `{package_dir}` ({unmapped[package_dir]} file(s))")
-    deleted = sorted(p for p in unmapped if not os.path.isdir(p))
+    # a package is gone once no Go source is left: its directory can survive, holding fixtures or documentation
+    deleted = sorted(p for p in unmapped if not (os.path.isdir(p) and any(n.endswith(".go") for n in os.listdir(p))))
     if deleted:
         # their importers changed or are gone too, so they can only be followed at the merge base
         print(f"\nDeleted entirely, so follow them at the merge base `{base}`:", ", ".join(f"`{p}`" for p in deleted))
